@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { trace } from "@opentelemetry/api";
+import { ConvexHttpClient } from "convex/browser";
 import express from "express";
 import httpProxy from "http-proxy";
 import { PostHog } from "posthog-node";
@@ -117,6 +118,30 @@ const posthog = POSTHOG_API_KEY
       flushInterval: 30_000,
     })
   : null;
+
+// Convex workflow orchestration (guarded — no crash if URL not set).
+// Set CONVEX_URL in Railway env vars after deploying the Convex backend service.
+const CONVEX_URL = process.env.CONVEX_URL?.trim() || "";
+const CONVEX_SECRET = process.env.OPENCLAW_CONVEX_SECRET?.trim() || undefined;
+
+/**
+ * Create a fresh ConvexHttpClient per request.
+ * The client is stateful (holds credentials + mutation queue), so sharing a
+ * single instance across concurrent Express requests would leak state.
+ * Returns null when Convex is not configured.
+ *
+ * NOTE: ConvexHttpClient is a stateless HTTP client — it uses fetch() per call
+ * and holds no persistent connections, sockets, or timers.  There is no
+ * `.close()` / `.destroy()` / `.dispose()` method on its prototype, so callers
+ * do not need to perform cleanup.  The instance is eligible for GC as soon as
+ * the request handler returns.  (Verified against convex/browser — see PR #XX.)
+ *
+ * @returns {import("convex/browser").ConvexHttpClient | null}
+ */
+function createConvexClient() {
+  if (!CONVEX_URL) return null;
+  return new ConvexHttpClient(CONVEX_URL);
+}
 
 /** Track an event in PostHog with optional OTel trace correlation. */
 function trackEvent(event, properties = {}) {
@@ -619,6 +644,9 @@ app.get("/setup/healthz", (_req, res) => res.json({
     running: Boolean(gatewayProc),
     safeMode: crashCount > MAX_CRASHES,
     crashCount,
+  },
+  convex: {
+    enabled: Boolean(CONVEX_URL),
   },
 }));
 
@@ -1472,6 +1500,7 @@ app.get("/setup/api/debug", requireSetupAuth, async (_req, res) => {
       lastDoctorAt,
       lastDoctorOutput,
       railwayCommit: process.env.RAILWAY_GIT_COMMIT_SHA || null,
+      convexEnabled: Boolean(CONVEX_URL),
     },
     openclaw: {
       entry: getOpenClawEntry(),
@@ -1896,6 +1925,164 @@ app.post("/setup/import", requireSetupAuth, async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Convex Workflow API (guarded — all endpoints no-op when CONVEX_URL is unset)
+// ---------------------------------------------------------------------------
+
+app.get("/setup/api/workflows/status", requireSetupAuth, async (_req, res) => {
+  res.json({
+    enabled: Boolean(CONVEX_URL),
+    convexUrl: CONVEX_URL ? "(set)" : "(not set)",
+  });
+});
+
+app.post("/setup/api/workflows/agent-task", requireSetupAuth, async (req, res) => {
+  const client = createConvexClient();
+  if (!client) {
+    return res.status(503).json({ ok: false, error: "Convex not configured (CONVEX_URL not set)" });
+  }
+
+  try {
+    const { taskDescription, agentId, models, maxRetries } = req.body || {};
+    if (!taskDescription) {
+      return res.status(400).json({ ok: false, error: "Missing taskDescription" });
+    }
+
+    // ConvexHttpClient requires the function reference as a string path.
+    const workflowId = await client.mutation("openclawApi:startAgentTask", {
+      secret: CONVEX_SECRET,
+      taskDescription,
+      agentId: agentId || undefined,
+      models: Array.isArray(models) ? models : undefined,
+      maxRetries: maxRetries != null ? Number(maxRetries) : undefined,
+    });
+
+    trackEvent("workflow_started", { type: "agentTask", workflowId });
+    return res.json({ ok: true, workflowId });
+  } catch (err) {
+    console.error("[workflows/agent-task]", redactSecrets(String(err)));
+    return res.status(500).json({ ok: false, error: redactSecrets(String(err)) });
+  }
+});
+
+app.post("/setup/api/workflows/heartbeat", requireSetupAuth, async (req, res) => {
+  const client = createConvexClient();
+  if (!client) {
+    return res.status(503).json({ ok: false, error: "Convex not configured (CONVEX_URL not set)" });
+  }
+
+  try {
+    const { pingModel } = req.body || {};
+    // Use the public-facing URL so Convex (running externally) can reach the
+    // gateway. GATEWAY_TARGET is 127.0.0.1 and only valid inside this container.
+    const rawPublicUrl = process.env.OPENCLAW_PUBLIC_URL?.trim() || process.env.RAILWAY_PUBLIC_DOMAIN?.trim() || "";
+    // Strip existing protocol to avoid double-prefix (e.g. https://https://...)
+    const publicGatewayUrl = rawPublicUrl
+      ? (rawPublicUrl.startsWith("http") ? rawPublicUrl : `https://${rawPublicUrl}`)
+      : "";
+    const workflowId = await client.mutation("openclawApi:startHeartbeat", {
+      secret: CONVEX_SECRET,
+      gatewayUrl: publicGatewayUrl,
+      gatewayToken: OPENCLAW_GATEWAY_TOKEN || undefined,
+      pingModel: pingModel || undefined,
+    });
+
+    trackEvent("workflow_started", { type: "heartbeat", workflowId });
+    return res.json({ ok: true, workflowId });
+  } catch (err) {
+    console.error("[workflows/heartbeat]", redactSecrets(String(err)));
+    return res.status(500).json({ ok: false, error: redactSecrets(String(err)) });
+  }
+});
+
+app.post("/setup/api/workflows/sub-agents", requireSetupAuth, async (req, res) => {
+  const client = createConvexClient();
+  if (!client) {
+    return res.status(503).json({ ok: false, error: "Convex not configured (CONVEX_URL not set)" });
+  }
+
+  try {
+    const { parentAgentId, tasks } = req.body || {};
+    if (!parentAgentId || !Array.isArray(tasks) || tasks.length === 0) {
+      return res.status(400).json({ ok: false, error: "Missing parentAgentId or tasks array" });
+    }
+
+    const workflowId = await client.mutation("openclawApi:startSubAgentOrchestration", {
+      secret: CONVEX_SECRET,
+      parentAgentId,
+      tasks,
+    });
+
+    trackEvent("workflow_started", { type: "subAgentOrchestration", workflowId });
+    return res.json({ ok: true, workflowId });
+  } catch (err) {
+    console.error("[workflows/sub-agents]", redactSecrets(String(err)));
+    return res.status(500).json({ ok: false, error: redactSecrets(String(err)) });
+  }
+});
+
+app.get("/setup/api/workflows/:workflowId", requireSetupAuth, async (req, res) => {
+  const client = createConvexClient();
+  if (!client) {
+    return res.status(503).json({ ok: false, error: "Convex not configured (CONVEX_URL not set)" });
+  }
+
+  try {
+    const status = await client.action("openclawApi:getWorkflowStatus", {
+      secret: CONVEX_SECRET,
+      workflowId: req.params.workflowId,
+    });
+    return res.json({ ok: true, status });
+  } catch (err) {
+    console.error("[workflows/status]", redactSecrets(String(err)));
+    return res.status(500).json({ ok: false, error: redactSecrets(String(err)) });
+  }
+});
+
+app.post("/setup/api/workflows/:workflowId/cancel", requireSetupAuth, async (req, res) => {
+  const client = createConvexClient();
+  if (!client) {
+    return res.status(503).json({ ok: false, error: "Convex not configured (CONVEX_URL not set)" });
+  }
+
+  try {
+    await client.mutation("openclawApi:cancelWorkflow", {
+      secret: CONVEX_SECRET,
+      workflowId: req.params.workflowId,
+    });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[workflows/cancel]", redactSecrets(String(err)));
+    return res.status(500).json({ ok: false, error: redactSecrets(String(err)) });
+  }
+});
+
+app.get("/setup/api/workflows", requireSetupAuth, async (req, res) => {
+  const client = createConvexClient();
+  if (!client) {
+    return res.status(503).json({ ok: false, error: "Convex not configured (CONVEX_URL not set)" });
+  }
+
+  try {
+    const validTypes = ["agentTask", "heartbeat", "subAgentOrchestration"];
+    const rawType = req.query.type || undefined;
+    if (rawType && !validTypes.includes(rawType)) {
+      return res.status(400).json({ ok: false, error: `Invalid type. Must be one of: ${validTypes.join(", ")}` });
+    }
+    const type = rawType;
+    const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20));
+    const workflows = await client.query("openclawApi:listRecentWorkflows", {
+      secret: CONVEX_SECRET,
+      type,
+      limit,
+    });
+    return res.json({ ok: true, workflows });
+  } catch (err) {
+    console.error("[workflows/list]", redactSecrets(String(err)));
+    return res.status(500).json({ ok: false, error: redactSecrets(String(err)) });
+  }
+});
+
 // Proxy everything else to the gateway.
 const proxy = httpProxy.createProxyServer({
   target: GATEWAY_TARGET,
@@ -1940,6 +2127,7 @@ const server = app.listen(PORT, "0.0.0.0", async () => {
   console.log(`[wrapper] gateway token: ${OPENCLAW_GATEWAY_TOKEN ? "(set)" : "(missing)"}`);
   console.log(`[wrapper] gateway target: ${GATEWAY_TARGET}`);
   console.log(`[wrapper] hooks token: ${OPENCLAW_HOOKS_TOKEN ? "(set)" : "(not set - n8n bridge disabled)"}`);
+  console.log(`[wrapper] convex workflows: ${CONVEX_URL ? "(enabled)" : "(not configured - set CONVEX_URL)"}`);
   if (N8N_WEBHOOK_URL) console.log(`[wrapper] n8n webhook url: ${N8N_WEBHOOK_URL}`);
   if (!SETUP_PASSWORD) {
     console.warn("[wrapper] WARNING: SETUP_PASSWORD is not set; /setup will error.");
