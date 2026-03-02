@@ -23,5 +23,5 @@ export default defineSchema({
     ),
     startedAt: v.number(),
     completedAt: v.optional(v.number()),
-  }).index("by_type", ["type"]),
+  }).index("by_type_and_time", ["type", "startedAt"]),
 });

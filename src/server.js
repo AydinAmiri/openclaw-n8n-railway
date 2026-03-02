@@ -128,6 +128,13 @@ const CONVEX_URL = process.env.CONVEX_URL?.trim() || "";
  * The client is stateful (holds credentials + mutation queue), so sharing a
  * single instance across concurrent Express requests would leak state.
  * Returns null when Convex is not configured.
+ *
+ * NOTE: ConvexHttpClient is a stateless HTTP client — it uses fetch() per call
+ * and holds no persistent connections, sockets, or timers.  There is no
+ * `.close()` / `.destroy()` / `.dispose()` method on its prototype, so callers
+ * do not need to perform cleanup.  The instance is eligible for GC as soon as
+ * the request handler returns.  (Verified against convex/browser — see PR #XX.)
+ *
  * @returns {import("convex/browser").ConvexHttpClient | null}
  */
 function createConvexClient() {
@@ -1964,8 +1971,13 @@ app.post("/setup/api/workflows/heartbeat", requireSetupAuth, async (req, res) =>
 
   try {
     const { pingModel } = req.body || {};
+    // Use the public-facing URL so Convex (running externally) can reach the
+    // gateway. GATEWAY_TARGET is 127.0.0.1 and only valid inside this container.
+    const publicDomain = process.env.OPENCLAW_PUBLIC_URL?.trim() || process.env.RAILWAY_PUBLIC_DOMAIN?.trim() || "";
+    const publicGatewayUrl = publicDomain ? `https://${publicDomain}` : "";
     const workflowId = await client.mutation("openclawApi:startHeartbeat", {
-      gatewayUrl: GATEWAY_TARGET,
+      gatewayUrl: publicGatewayUrl,
+      gatewayToken: OPENCLAW_GATEWAY_TOKEN || undefined,
       pingModel: pingModel || undefined,
     });
 

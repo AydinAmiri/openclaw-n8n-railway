@@ -20,6 +20,8 @@ import { workflow } from "../index";
 export const heartbeatWorkflow = workflow.define({
   args: {
     gatewayUrl: v.optional(v.string()),
+    // Gateway auth token — required when gateway runs in token-auth mode.
+    gatewayToken: v.optional(v.string()),
     // If provided, sends a tiny completion request to verify model routing.
     pingModel: v.optional(v.string()),
   },
@@ -35,7 +37,7 @@ export const heartbeatWorkflow = workflow.define({
     // Step 1: Check gateway health.
     const gatewayResult = await step.runAction(
       internal.workflows.heartbeat.checkGateway,
-      { gatewayUrl: args.gatewayUrl ?? "" },
+      { gatewayUrl: args.gatewayUrl ?? "", gatewayToken: args.gatewayToken ?? "" },
     );
 
     // Step 2: Optional model ping.
@@ -45,6 +47,7 @@ export const heartbeatWorkflow = workflow.define({
         internal.workflows.heartbeat.pingModel,
         {
           gatewayUrl: args.gatewayUrl ?? "",
+          gatewayToken: args.gatewayToken ?? "",
           model: args.pingModel,
         },
       );
@@ -76,7 +79,10 @@ export const heartbeatWorkflow = workflow.define({
 // ---------------------------------------------------------------------------
 
 export const checkGateway = internalAction({
-  args: { gatewayUrl: v.string() },
+  args: {
+    gatewayUrl: v.string(),
+    gatewayToken: v.optional(v.string()),
+  },
   handler: async (_ctx, args) => {
     if (!args.gatewayUrl) {
       // No gateway URL configured — can't check, assume degraded.
@@ -85,8 +91,13 @@ export const checkGateway = internalAction({
 
     try {
       const url = args.gatewayUrl.replace(/\/$/, "") + "/healthz";
+      const headers: Record<string, string> = {};
+      if (args.gatewayToken) {
+        headers["Authorization"] = `Bearer ${args.gatewayToken}`;
+      }
       const resp = await fetch(url, {
         method: "GET",
+        headers,
         signal: AbortSignal.timeout(10_000),
       });
       const ok = resp.ok;
@@ -100,6 +111,7 @@ export const checkGateway = internalAction({
 export const pingModel = internalAction({
   args: {
     gatewayUrl: v.string(),
+    gatewayToken: v.optional(v.string()),
     model: v.string(),
   },
   handler: async (_ctx, args) => {
@@ -108,12 +120,18 @@ export const pingModel = internalAction({
     }
 
     try {
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      if (args.gatewayToken) {
+        headers["Authorization"] = `Bearer ${args.gatewayToken}`;
+      }
       // Lightweight completion request — just enough to verify routing works.
       const resp = await fetch(
         args.gatewayUrl.replace(/\/$/, "") + "/v1/chat/completions",
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers,
           body: JSON.stringify({
             model: args.model,
             messages: [{ role: "user", content: "ping" }],

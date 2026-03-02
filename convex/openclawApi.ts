@@ -39,6 +39,7 @@ export const startAgentTask = mutation({
 export const startHeartbeat = mutation({
   args: {
     gatewayUrl: v.optional(v.string()),
+    gatewayToken: v.optional(v.string()),
     pingModel: v.optional(v.string()),
   },
   returns: v.string(),
@@ -48,6 +49,7 @@ export const startHeartbeat = mutation({
       internal.workflows.heartbeat.heartbeatWorkflow,
       {
         gatewayUrl: args.gatewayUrl,
+        gatewayToken: args.gatewayToken,
         pingModel: args.pingModel,
       },
     );
@@ -126,7 +128,7 @@ export const listRecentWorkflows = query({
     if (args.type) {
       return await ctx.db
         .query("openclawWorkflows")
-        .withIndex("by_type", (q) => q.eq("type", args.type!))
+        .withIndex("by_type_and_time", (q) => q.eq("type", args.type!))
         .order("desc")
         .take(limit);
     }

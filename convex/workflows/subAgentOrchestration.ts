@@ -145,7 +145,7 @@ export const recordOrchestrationResult = internalMutation({
   handler: async (ctx, args) => {
     const existing = await ctx.db
       .query("openclawWorkflows")
-      .withIndex("by_type", (q) => q.eq("type", "subAgentOrchestration"))
+      .withIndex("by_type_and_time", (q) => q.eq("type", "subAgentOrchestration"))
       .filter((q) => q.eq(q.field("workflowId"), args.workflowId))
       .first();
 
