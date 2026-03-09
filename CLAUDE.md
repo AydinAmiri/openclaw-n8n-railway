@@ -1,3 +1,32 @@
+# OpenClaw Gateway — Claude Code Context
+
+## Project Overview
+LLM gateway (OpenWebUI-based) deployed on Railway with Tailscale networking.
+
+## Commands
+- **Deploy**: `railway up`
+- **Logs**: `railway logs --latest`
+- **Status**: `railway status`
+- **Health**: `curl http://localhost:8080/healthz`
+
+## Environment Variables
+| Variable | Format | Notes |
+|---|---|---|
+| `XAI_API_KEY` | | NOT GROK_API_KEY |
+| `GEMINI_API_KEY` | | NOT GOOGLE_API_KEY |
+| `OPENAI_API_KEY` | | |
+| `ANTHROPIC_API_KEY` | | |
+| `DATABASE_URL` | `postgres://...` | NOT postgresql:// |
+| `TAILSCALE_AUTHKEY` | `tskey-auth-...` | Expires — check validity |
+
+## Known Gotchas
+- Env var naming mismatches cause silent failures — always use exact names above
+- Railway SSH escaping is fragile — prefer `railway logs` over SSH
+- Tailscale auth key expires — check if key is valid when networking fails
+- Always `railway status` first to verify correct service is linked
+
+---
+
 # OpenClaw Railway Template — Project Rules
 
 ## Required Reading: Critical Patterns
