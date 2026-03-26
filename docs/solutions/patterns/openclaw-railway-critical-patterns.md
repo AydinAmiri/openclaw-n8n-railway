@@ -110,3 +110,47 @@ heartbeat: {
 
 **Examples:**
 - [multi-provider-model-routing-OpenClaw-20260227.md](../integration-issues/multi-provider-model-routing-OpenClaw-20260227.md)
+
+---
+
+## Pattern 8: Never Accept URLs from Callers for Server-Side Fetch
+
+**Common symptom:** SSRF — callers trigger outbound requests to arbitrary hosts
+**Root cause:** `gatewayUrl` accepted as mutation arg and used in `fetch()`
+**Solution:** Read URLs from server environment, never from caller input.
+
+**Examples:**
+- [ssrf-via-caller-supplied-gateway-url-OpenClaw-20260325.md](../integration-issues/ssrf-via-caller-supplied-gateway-url-OpenClaw-20260325.md)
+
+---
+
+## Pattern 9: Convex Has Its Own Env Var System
+
+**Common symptom:** Convex functions throw "not configured" despite Railway env vars being set
+**Root cause:** Railway vars inject into container, not Convex function runtime
+**Solution:** Use `npx convex env set KEY VALUE` for function-accessible vars.
+
+**Examples:**
+- [convex-env-vars-vs-railway-vars-OpenClaw-20260325.md](../integration-issues/convex-env-vars-vs-railway-vars-OpenClaw-20260325.md)
+
+---
+
+## Pattern 10: One Repo Deploys All Convex Functions
+
+**Common symptom:** Functions disappear after deploying from a different repo
+**Root cause:** Convex deploy is atomic — replaces ALL functions
+**Solution:** Keep all functions in one repo. Disable deploy from other repos.
+
+**Examples:**
+- [convex-dual-deploy-overwrite-OpenClaw-20260325.md](../integration-issues/convex-dual-deploy-overwrite-OpenClaw-20260325.md)
+
+---
+
+## Pattern 11: Don't Persist OPENCLAW_UPDATE_REF as Env Var
+
+**Common symptom:** Container crash-loops into safe mode after every restart
+**Root cause:** Update script rebuilds on every start; build failures cascade into safe mode
+**Solution:** Use console API for one-time updates, not persistent env vars.
+
+**Examples:**
+- [openclaw-update-build-failure-node-esm-OpenClaw-20260325.md](../runtime-errors/openclaw-update-build-failure-node-esm-OpenClaw-20260325.md)
