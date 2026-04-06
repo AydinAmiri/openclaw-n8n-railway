@@ -1976,6 +1976,23 @@ app.get("/setup/api/config/raw", requireSetupAuth, async (_req, res) => {
   }
 });
 
+app.get("/setup/api/workspace/read", requireSetupAuth, (req, res) => {
+  const filename = String(req.query.file || "").trim();
+  if (!filename || /[\/\\]|\.\./.test(filename)) {
+    return res.status(400).json({ ok: false, error: "Invalid filename (no paths, no traversal)" });
+  }
+  const filePath = path.join(WORKSPACE_DIR, filename);
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ ok: false, error: `File not found: ${filename}` });
+  }
+  try {
+    const content = fs.readFileSync(filePath, "utf8");
+    res.json({ ok: true, filename, size: content.length, content });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
 app.post("/setup/api/config/raw", requireSetupAuth, async (req, res) => {
   try {
     const content = String((req.body && req.body.content) || "");
