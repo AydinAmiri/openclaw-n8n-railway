@@ -90,5 +90,22 @@ fi
 export PNPM_HOME="${PNPM_HOME:-/root/.local/share/pnpm}"
 export PATH="$PNPM_HOME:$PATH"
 
+# --- Ensure Control UI allowedOrigins ---
+if [ -n "$RAILWAY_PUBLIC_DOMAIN" ] && [ -f /data/state/openclaw.json ]; then
+  ORIGIN="https://$RAILWAY_PUBLIC_DOMAIN"
+  node -e "
+    const fs = require('fs');
+    const p = '/data/state/openclaw.json';
+    const c = JSON.parse(fs.readFileSync(p, 'utf8'));
+    if (!c.gateway) c.gateway = {};
+    if (!c.gateway.controlUi) c.gateway.controlUi = {};
+    const origins = c.gateway.controlUi.allowedOrigins || [];
+    if (!origins.includes('$ORIGIN')) origins.push('$ORIGIN');
+    c.gateway.controlUi.allowedOrigins = origins;
+    fs.writeFileSync(p, JSON.stringify(c, null, 2));
+  " && echo "[controlUi] Ensured allowedOrigins includes $ORIGIN" \
+    || echo "[controlUi] Could not patch config (non-fatal)"
+fi
+
 # --- Start OpenClaw ---
 exec node --import /app/src/instrumentation.mjs /app/src/server.js
