@@ -1993,6 +1993,28 @@ app.get("/setup/api/workspace/read", requireSetupAuth, (req, res) => {
   }
 });
 
+app.put("/setup/api/workspace/write", requireSetupAuth, (req, res) => {
+  const { filename, content } = req.body || {};
+  const name = String(filename || "").trim();
+  if (!name || /[\/\\]|\.\./.test(name)) {
+    return res.status(400).json({ ok: false, error: "Invalid filename (no paths, no traversal)" });
+  }
+  if (typeof content !== "string") {
+    return res.status(400).json({ ok: false, error: "Missing content field (string)" });
+  }
+  if (content.length > 500_000) {
+    return res.status(413).json({ ok: false, error: "Content too large (max 500KB)" });
+  }
+  try {
+    fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
+    const filePath = path.join(WORKSPACE_DIR, name);
+    fs.writeFileSync(filePath, content, "utf8");
+    res.json({ ok: true, filename: name, size: content.length });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
 app.post("/setup/api/config/raw", requireSetupAuth, async (req, res) => {
   try {
     const content = String((req.body && req.body.content) || "");
