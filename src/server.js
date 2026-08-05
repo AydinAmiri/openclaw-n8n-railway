@@ -829,6 +829,24 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000).unref();
 
+/**
+ * Standalone Basic-auth check (no rate-limit side effects) for contexts without
+ * an Express res, e.g. the WebSocket upgrade handler. Returns true iff the
+ * request carries the correct setup password.
+ */
+function hasValidSetupBasicAuth(req) {
+  if (!SETUP_PASSWORD) return false;
+  const header = req?.headers?.authorization || "";
+  const [scheme, encoded] = header.split(" ");
+  if (scheme !== "Basic" || !encoded) return false;
+  const decoded = Buffer.from(encoded, "base64").toString("utf8");
+  const idx = decoded.indexOf(":");
+  const password = idx >= 0 ? decoded.slice(idx + 1) : "";
+  const pwBuf = Buffer.from(password);
+  const expectedBuf = Buffer.from(SETUP_PASSWORD);
+  return pwBuf.length === expectedBuf.length && crypto.timingSafeEqual(pwBuf, expectedBuf);
+}
+
 function requireSetupAuth(req, res, next) {
   if (!SETUP_PASSWORD) {
     return res
@@ -2400,6 +2418,17 @@ proxy.on("error", (err, _req, _res) => {
   console.error("[proxy]", err);
 });
 
+// SECURITY (Atro lockdown, Decision #109): everything below this point is the
+// gateway / Control-UI proxy and must NOT be reachable from the public internet.
+// The public, unauthenticated routes (/healthz, /setup/healthz) and the
+// password-protected /setup/* routes (used by the nightly MEMORY.md sync) are all
+// registered ABOVE this line, so they are unaffected. Requiring the setup password
+// here means an anonymous visitor can no longer load the Control UI or reach the
+// gateway. The founder's normal paths are untouched: Telegram is outbound polling,
+// and admin UI access is available privately via Tailscale (which hits the gateway
+// directly, bypassing this wrapper).
+app.use(requireSetupAuth);
+
 app.use(async (req, res) => {
   // If not configured, force users to /setup for any non-setup routes.
   if (!isConfigured() && !req.path.startsWith("/setup")) {
@@ -2513,6 +2542,19 @@ const server = app.listen(PORT, "0.0.0.0", async () => {
 });
 
 server.on("upgrade", async (req, socket, head) => {
+  // SECURITY (Atro lockdown, Decision #109): the Control UI drives the gateway
+  // over a WebSocket. Require the setup password on public WS upgrades so the
+  // gateway is not publicly reachable. Tailscale admin access hits the gateway
+  // directly and bypasses this wrapper, so the founder is unaffected.
+  if (!hasValidSetupBasicAuth(req)) {
+    try {
+      socket.write('HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm="OpenClaw"\r\n\r\n');
+    } catch {
+      // ignore
+    }
+    socket.destroy();
+    return;
+  }
   if (!isConfigured()) {
     socket.destroy();
     return;

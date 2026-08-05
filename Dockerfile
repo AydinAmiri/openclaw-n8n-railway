@@ -52,8 +52,11 @@ ENV PATH="/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:${PATH}
 WORKDIR /app
 
 RUN corepack enable
-COPY package.json pnpm-lock.yaml* ./
-RUN pnpm install --prod || npm install --omit=dev
+# Install the wrapper's own production deps. The repo ships a package-lock.json,
+# so use npm deterministically. (Older recipe copied a non-existent pnpm-lock and
+# then fell back to npm on a half-populated tree, which crashed on newer tooling.)
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev || npm install --omit=dev
 
 # Copy built openclaw
 COPY --from=openclaw-build /openclaw /openclaw
